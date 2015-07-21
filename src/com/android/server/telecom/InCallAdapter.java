@@ -325,11 +325,12 @@ class InCallAdapter extends IInCallAdapter.Stub {
     }
 
     @Override
-    public void phoneAccountSelected(String callId, PhoneAccountHandle accountHandle) {
+    public void phoneAccountSelected(String callId, PhoneAccountHandle accountHandle, boolean setDefault) {
         if (mCallIdMapper.isValidCallId(callId)) {
             SomeArgs args = SomeArgs.obtain();
             args.arg1 = callId;
             args.arg2 = accountHandle;
+			args.argi1 = setDefault ? 1 : 0;
             mHandler.obtainMessage(MSG_PHONE_ACCOUNT_SELECTED, args).sendToTarget();
         }
     }
