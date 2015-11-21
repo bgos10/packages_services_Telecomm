@@ -27,6 +27,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
+import android.os.SystemProperties;
 import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
@@ -613,6 +614,38 @@ final class CallAudioManager extends CallsManagerListenerBase
             mAudioFocusStreamType = STREAM_NONE;
             mCallToSpeedUpMTAudio = null;
         }
+    }
+
+    private int getPhoneId(Call call) {
+        if (call.getTargetPhoneAccount() != null) {
+            PhoneAccountHandle account = call.getTargetPhoneAccount();
+            try {
+                int index = Integer.parseInt(account.getId());
+                int phoneId = SubscriptionManager.getPhoneId(index);
+                if (SubscriptionManager.isValidPhoneId(phoneId)) {
+                    return phoneId;
+                }
+            } catch (NumberFormatException e) {
+                Log.e(this, e, "Cannot get phoneId from ID value " + account.getId());
+            }
+        }
+        return -1;
+    }
+
+    private int getPhoneId(Call call) {
+        if (call.getTargetPhoneAccount() != null) {
+            PhoneAccountHandle account = call.getTargetPhoneAccount();
+            try {
+                int index = Integer.parseInt(account.getId());
+                int phoneId = SubscriptionManager.getPhoneId(index);
+                if (SubscriptionManager.isValidPhoneId(phoneId)) {
+                    return phoneId;
+                }
+            } catch (NumberFormatException e) {
+                Log.e(this, e, "Cannot get phoneId from ID value " + account.getId());
+            }
+        }
+        return -1;
     }
 
     /**
