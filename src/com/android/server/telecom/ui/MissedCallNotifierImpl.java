@@ -485,7 +485,7 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
         notification.defaults |= Notification.DEFAULT_LIGHTS;
     }
 
-    private boolean canRespondViaSms(Call call) {
+    private boolean canRespondViaSms(MissedCallInfo call) {
         // Only allow respond-via-sms for "tel:" calls.
         return call.getHandle() != null &&
                 PhoneAccount.SCHEME_TEL.equals(call.getHandle().getScheme());
