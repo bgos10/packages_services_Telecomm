@@ -29,6 +29,7 @@ import android.os.Message;
 import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.os.ServiceManager;
+import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
 import android.telecom.PhoneAccountHandle;
@@ -129,6 +130,11 @@ final class CallAudioManager extends CallsManagerListenerBase
                 case MSG_AUDIO_MANAGER_SET_MODE: {
                     int newMode = msg.arg1;
                     int oldMode = mAudioManager.getMode();
+
+                    Call call = mCallsManager.getForegroundCall();
+                    boolean setMsimAudioParams = SystemProperties
+                            .getBoolean("ro.multisim.set_audio_params", false);
+
                     Log.v(this, "Request to change audio mode from %s to %s", modeToString(oldMode),
                             modeToString(newMode));
 
@@ -138,6 +144,17 @@ final class CallAudioManager extends CallsManagerListenerBase
                             Log.i(this, "Transition from IN_CALL -> RINGTONE."
                                     + "  Resetting to NORMAL first.");
                             mAudioManager.setMode(AudioManager.MODE_NORMAL);
+                        }
+
+                        if (call != null && setMsimAudioParams
+                                && newMode == AudioManager.MODE_IN_CALL) {
+                            int phoneId = getPhoneId(call);
+                            Log.d(this, "setAudioParameters phoneId=" + phoneId);
+                            if (phoneId == 0) {
+                                mAudioManager.setParameters("phone_type=cp1");
+                            } else if (phoneId == 1) {
+                                mAudioManager.setParameters("phone_type=cp2");
+                            }
                         }
                         mAudioManager.setMode(newMode);
                         synchronized (mLock) {
@@ -563,7 +580,9 @@ final class CallAudioManager extends CallsManagerListenerBase
             } else if (!hasRingingForegroundCall() && mCallsManager.hasOnlyDisconnectedCalls()) {
                 Log.v(this, "updateAudioStreamAndMode : no ringing call");
                 // Request to set audio mode normal. Here confirm if any call exist.
-                    abandonAudioFocus();              
+                if (!hasAnyCalls()) {
+                    abandonAudioFocus();
+                }
             } else {
                 // mIsRinging is false, but there is a foreground ringing call present. Don't
                 // abandon audio focus immediately to prevent audio focus from getting lost between
@@ -754,6 +773,10 @@ final class CallAudioManager extends CallsManagerListenerBase
             Binder.restoreCallingIdentity(ident);
         }
         return UserHandle.USER_OWNER;
+    }
+
+    private boolean hasAnyCalls() {
+        return mCallsManager.hasAnyCalls();
     }
 
     /**
