@@ -16,11 +16,15 @@
 
 package com.android.server.telecom.components;
 
+import android.app.ActivityManager;
+import android.app.ActivityManagerNative;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.os.IBinder;
+import android.os.RemoteException;
 
 import com.android.internal.telephony.CallerInfoAsyncQuery;
 import com.android.server.telecom.CallerInfoAsyncQueryFactory;
@@ -37,10 +41,26 @@ import com.android.server.telecom.ViceNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl;
 import com.android.server.telecom.ui.ViceNotificationImpl;
 
+import java.util.Locale;
+
+import libcore.util.Objects;
+
 /**
  * Implementation of the ITelecom interface.
  */
 public class TelecomService extends Service implements TelecomSystem.Component {
+
+    private Locale mLastLocale;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        try {
+            mLastLocale = ActivityManagerNative.getDefault().getConfiguration().locale;
+        } catch (RemoteException e) {
+            mLastLocale = null;
+        }
+    }
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -121,5 +141,15 @@ public class TelecomService extends Service implements TelecomSystem.Component {
     @Override
     public TelecomSystem getTelecomSystem() {
         return TelecomSystem.getInstance();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (!Objects.equal(mLastLocale, newConfig.locale)) {
+            getTelecomSystem().getTelecomServiceImpl()
+                    .repostMissedCallNotification(getPackageName());
+            mLastLocale = newConfig.locale;
+        }
     }
 }

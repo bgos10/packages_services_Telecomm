@@ -232,6 +232,15 @@ public class CallsManager extends Call.ListenerBase implements VideoProviderProx
 
     ViceNotificationImpl getViceNotificationImpl() {
         return mViceNotificationImpl;
+
+    /**
+     * Refreshes the missed calls notification(s).
+     * @hide
+     */
+    public void refreshMissedCalls() {
+        mMissedCallNotifier.clearMissedCallNotifications();
+        mMissedCallNotifier.updateOnStartup(
+                mLock, this, mContactsAsyncHelper, mCallerInfoAsyncQueryFactory);
     }
 
     public void setRespondViaSmsManager(RespondViaSmsManager respondViaSmsManager) {
