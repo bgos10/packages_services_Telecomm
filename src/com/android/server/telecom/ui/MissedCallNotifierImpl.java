@@ -16,9 +16,12 @@
 
 package com.android.server.telecom.ui;
 
+import android.content.ComponentName;
+import android.telecom.TelecomManager;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallerInfoAsyncQueryFactory;
+import com.android.server.telecom.CallInfoProvider;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.CallsManagerListenerBase;
 import com.android.server.telecom.Constants;
@@ -36,20 +39,24 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.TaskStackBuilder;
 import android.content.AsyncQueryHandler;
+import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.Uri;
+import android.provider.Settings;
 import android.os.AsyncTask;
 import android.os.Binder;
 import android.os.UserHandle;
-import android.provider.CallLog;
 import android.provider.CallLog.Calls;
-import android.provider.Settings;
 import android.telecom.DisconnectCause;
 import android.telecom.PhoneAccount;
 import android.telephony.PhoneNumberUtils;
@@ -60,12 +67,16 @@ import android.text.TextDirectionHeuristics;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
 import android.text.style.RelativeSizeSpan;
-import java.util.ArrayList;
 
+import java.lang.Override;
+import java.lang.String;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-import java.util.Locale;
 
 // TODO: Needed for move to system service: import com.android.internal.R;
 
@@ -99,17 +110,115 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
 
     private static final int MISSED_CALL_NOTIFICATION_ID = 1;
 
+    // notification light default constants
+    public static final int DEFAULT_COLOR = 0xFFFFFF; //White
+    public static final int DEFAULT_TIME = 1000; // 1 second
+
     private final Context mContext;
     private final NotificationManager mNotificationManager;
 
-    // Used to track the number of missed calls.
-    private int mMissedCallCount = 0;
+    private ExecutorService mCallInfoExecutor;
+    private CallInfoProvider mCallInfoProvider;
+    private boolean mNetworkConnected;
+    private final List<MissedCallInfo> mMissedCalls =
+            Collections.synchronizedList(new ArrayList<MissedCallInfo>());
+    private final ComponentName mNotificationComponent;
 
-    public MissedCallNotifierImpl(Context context) {
+    public MissedCallNotifierImpl(Context context, CallInfoProvider callInfoProvider) {
         mContext = context;
         mNotificationManager =
                 (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+        mCallInfoProvider = callInfoProvider;
+        registerForNetwork();
+		
+        final String notificationComponent = context.getString(R.string.notification_component);
+
+        mNotificationComponent = notificationComponent != null
+                ? ComponentName.unflattenFromString(notificationComponent) : null;
     }
+
+
+    private BroadcastReceiver mConnectivityListener = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            ConnectivityManager connectivityManager = (ConnectivityManager) context
+                    .getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo info = connectivityManager.getActiveNetworkInfo();
+            if (info == null || !info.isConnected()) {
+                mNetworkConnected = false;
+                return;
+            }
+            mNetworkConnected = true;
+            if (!mMissedCalls.isEmpty()) {
+                synchronized (mMissedCalls) {
+                    for (MissedCallInfo callInfo : mMissedCalls) {
+                        if (!callInfo.isFetchRequested()) {
+                            fetchCallInfoAsync(callInfo);
+                        }
+                    }
+                }
+            }
+         }
+    };
+
+    private void registerForNetwork() {
+        if (mCallInfoProvider.providesCallInfo() && mCallInfoProvider.requiresNetwork()) {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION);
+            mContext.registerReceiver(mConnectivityListener, filter);
+       }
+   }
+
+   void fetchCallInfoAsync(final MissedCallInfo call) {
+        // If there is no network and the provider needs it for
+        // lookups, delay the fetching as the connectivity manager
+        // receiver will submit tasks upon connectivity
+        if (!mNetworkConnected && mCallInfoProvider.requiresNetwork()) {
+            return;
+        }
+        // Don't fetch information for contacts for whom information
+        // is already available via contacts provider
+        if (call.getCallerInfo() != null && call.getCallerInfo().contactExists) {
+            return;
+        }
+        if (mCallInfoExecutor == null) {
+            mCallInfoExecutor = Executors.newSingleThreadExecutor();
+        }
+        // Marker used to ensure that the network receiver doesn't
+        // retrigger requests for those already submitted
+        call.setFetchRequested(true);
+        mCallInfoExecutor.submit(new Runnable() {
+            @Override
+            public void run() {
+                boolean hasInfo = mCallInfoProvider.updateInfoForCall(call);
+                call.setProviderHasInformation(hasInfo);
+                // Check if the provider has additional info, and that
+                // the call object is still valid
+                if (hasInfo && mMissedCalls.contains(call)) {
+                    showMissedCallNotificationInternal(call);
+                }
+            }
+        });
+    }
+
+    /**
+     * Create a system notification for the missed call.
+     *
+     * @param call The missed call.
+     */
+    @Override
+    public void showMissedCallNotification(Call call) {
+        // keep track of the call, keeping list sorted from newest to oldest
+        MissedCallInfo missedCallInfo = new MissedCallInfo(call);
+        missedCallInfo.setName(getNameForCall(call));
+        missedCallInfo.setPhotoVisible(mMissedCalls.size() == 0);
+        mMissedCalls.add(0, missedCallInfo);
+
+        if (mCallInfoProvider.providesCallInfo()) {
+            fetchCallInfoAsync(missedCallInfo);
+        }
+        showMissedCallNotificationInternal(missedCallInfo);
+     }
 
     /** {@inheritDoc} */
     @Override
@@ -147,6 +256,11 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
         cancelMissedCallNotification();
     }
 
+    @Override
+    public void clearMissedCallNotifications() {
+        cancelMissedCallNotification();
+    }
+
     /**
      * Broadcasts missed call notification to custom component if set.
      * @param number The phone number associated with the notification. null if
@@ -166,9 +280,16 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
             intent.putExtra(TelecomManager.EXTRA_CLEAR_MISSED_CALLS_INTENT,
                     createClearMissedCallsPendingIntent());
 
+
             if (count == 1 && call != null) {
-                intent.putExtra(TelecomManager.EXTRA_CALL_BACK_INTENT,
-                    createCallBackPendingIntent(call.getHandle()));
+                final Uri handleUri = call.getHandle();
+                String handle = handleUri == null ? null : handleUri.getSchemeSpecificPart();
+
+                if (!TextUtils.isEmpty(handle) && !TextUtils.equals(handle,
+                        mContext.getString(R.string.handle_restricted))) {
+                    intent.putExtra(TelecomManager.EXTRA_CALL_BACK_INTENT,
+                            createCallBackPendingIntent(handleUri));
+                }
             }
 
             mContext.sendBroadcast(intent);
@@ -178,30 +299,7 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
         return false;
     }
 
-    /**
-     * Create a system notification for the missed call.
-     *
-     * @param call The missed call.
-     */
-    @Override
-    public void showMissedCallNotification(Call call) {
-        mMissedCallCount++;
-
-        final int titleResId;
-        final String expandedText;  // The text in the notification's line 1 and 2.
-
-        // Display the first line of the notification:
-        // 1 missed call: <caller name || handle>
-        // More than 1 missed call: <number of calls> + "missed calls"
-        if (mMissedCallCount == 1) {
-            titleResId = R.string.notification_missedCallTitle;
-            expandedText = getNameForCall(call);
-        } else {
-            titleResId = R.string.notification_missedCallsTitle;
-            expandedText =
-                    mContext.getString(R.string.notification_missedCallsMsg, mMissedCallCount);
-        }
-
+    private void showMissedCallNotificationInternal(MissedCallInfo call) {
         // Create a public viewable version of the notification, suitable for display when sensitive
         // notification content is hidden.
         Notification.Builder publicBuilder = new Notification.Builder(mContext);
@@ -218,36 +316,26 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
 
         // Create the notification suitable for display when sensitive information is showing.
         Notification.Builder builder = new Notification.Builder(mContext);
-        if (Settings.System.getInt(mContext.getContentResolver(),
-               Settings.System.KEY_MISSED_CALL_BREATH, 0) == 1) {
-                builder.setSmallIcon(R.drawable.stat_notify_missed_call_breath)
+        builder.setSmallIcon(android.R.drawable.stat_notify_missed_call)
+                .setColor(mContext.getResources().getColor(R.color.theme_color))
                 .setWhen(call.getCreationTimeMillis())
                 .setContentIntent(createCallLogPendingIntent())
                 .setAutoCancel(true)
-		.setContentTitle(mContext.getText(titleResId))
-		.setContentText(expandedText)
-                .setDeleteIntent(createClearMissedCallsPendingIntent());
-             } else {
-                builder.setSmallIcon(android.R.drawable.stat_notify_missed_call)
-                .setWhen(call.getCreationTimeMillis())
-                .setContentIntent(createCallLogPendingIntent())
-                .setAutoCancel(true)
-		.setContentTitle(mContext.getText(titleResId))
-		.setContentText(expandedText)
                 .setDeleteIntent(createClearMissedCallsPendingIntent())
                 // Include a public version of the notification to be shown when the missed call
                 // notification is shown on the user's lock screen and they have chosen to hide
                 // sensitive notification information.
                 .setPublicVersion(publicBuilder.build());
-             }
 
         // display the first line of the notification:
        // 1 missed call: call name
         // more than 1 missed call: <number of calls> + "missed calls" (+ list of calls)
         if (mMissedCalls.size() == 1) {
             builder.setContentTitle(mContext.getText(R.string.notification_missedCallTitle));
-            builder.setContentText(callName);
+            builder.setContentText(call.getName());
+            builder.setSubText(call.getSummaryText());
             publicBuilder.setContentText(mContext.getText(R.string.notification_missedCallTitle));
+
         } else {
             String message = mContext.getString(R.string.notification_missedCallsMsg,
                     mMissedCalls.size());
@@ -260,11 +348,11 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
             String number = call.getNumber();
 
             for (MissedCallInfo info : mMissedCalls) {
-                style.addLine(formatSingleCallLine(info.name, info.date));
+                style.addLine(formatSingleCallLine(info.getName(), info.getCreationTimeMillis()));
 
                 // only keep number if equal for all calls in order to hide actions
                 // if the calls came from different numbers
-                if (!TextUtils.equals(number, info.number)) {
+                if (!TextUtils.equals(number, info.getNumber())) {
                     number = null;
                 }
             }
@@ -308,7 +396,13 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
         }
 
         Notification notification = builder.build();
-        configureLedOnNotification(notification);
+        configureLedNotification(mContext, notification);
+
+        // Allow providers to update notification before displaying it,
+        // for things like badging...etc
+        if (call.providerHasInformation()) {
+            mCallInfoProvider.updateMissedCallNotification(mMissedCalls, notification);
+        }
 
         Log.i(this, "Adding missed call notification for %s.", call);
         long token = Binder.clearCallingIdentity();
@@ -322,8 +416,13 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
 
     /** Cancels the "missed call" notification. */
     private void cancelMissedCallNotification() {
-        // Reset the number of missed calls to 0.
-        mMissedCallCount = 0;
+        // Reset the list of missed calls
+        mMissedCalls.clear();
+
+        if (sendNotificationCustomComponent(null, mMissedCalls.size())) {
+            return;
+        }
+
         long token = Binder.clearCallingIdentity();
         try {
             mNotificationManager.cancelAsUser(null, MISSED_CALL_NOTIFICATION_ID,
@@ -462,17 +561,33 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
     }
 
     /**
-     * Configures a notification to emit the blinky notification light.
+     * Configures a Notification to emit the blinky message-waiting/
+     * missed-call signal.
      */
-    private void configureLedOnNotification(Notification notification) {
-        notification.flags |= Notification.FLAG_SHOW_LIGHTS;
-        notification.defaults |= Notification.DEFAULT_LIGHTS;
-    }
+    private static void configureLedNotification(Context context, Notification notification) {
+        ContentResolver resolver = context.getContentResolver();
 
-    private boolean canRespondViaSms(MissedCallInfo call) {
-        // Only allow respond-via-sms for "tel:" calls.
-        return call.getHandle() != null &&
-                PhoneAccount.SCHEME_TEL.equals(call.getHandle().getScheme());
+        boolean lightEnabled = Settings.System.getInt(resolver,
+                Settings.System.NOTIFICATION_LIGHT_PULSE, 0) == 1;
+        if (!lightEnabled) {
+            return;
+        }
+        notification.flags |= Notification.FLAG_SHOW_LIGHTS;
+
+        // Get Missed call and Voice mail values if they are to be used
+        boolean customEnabled = Settings.System.getInt(resolver,
+                Settings.System.NOTIFICATION_LIGHT_PULSE_CUSTOM_ENABLE, 0) == 1;
+        if (!customEnabled) {
+            notification.defaults |= Notification.DEFAULT_LIGHTS;
+            return;
+        }
+
+        notification.ledARGB = Settings.System.getInt(resolver,
+            Settings.System.NOTIFICATION_LIGHT_PULSE_CALL_COLOR, DEFAULT_COLOR);
+        notification.ledOnMS = Settings.System.getInt(resolver,
+            Settings.System.NOTIFICATION_LIGHT_PULSE_CALL_LED_ON, DEFAULT_TIME);
+        notification.ledOffMS = Settings.System.getInt(resolver,
+            Settings.System.NOTIFICATION_LIGHT_PULSE_CALL_LED_OFF, DEFAULT_TIME);
     }
 
     private boolean canRespondViaSms(MissedCallInfo call) {

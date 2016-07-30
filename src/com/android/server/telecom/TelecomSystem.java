@@ -69,7 +69,8 @@ public final class TelecomSystem {
     private final TelecomServiceImpl mTelecomServiceImpl;
     private final ContactsAsyncHelper mContactsAsyncHelper;
     private final ViceNotifier mViceNotifier;
-
+    private final CallInfoProvider mCallInfoProvider;
+    
     private final BroadcastReceiver mUserSwitchedReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -94,6 +95,7 @@ public final class TelecomSystem {
     public TelecomSystem(
             Context context,
             MissedCallNotifier missedCallNotifier,
+            CallInfoProvider callInfoProvider,
             CallerInfoAsyncQueryFactory callerInfoAsyncQueryFactory,
             HeadsetMediaButtonFactory headsetMediaButtonFactory,
             ProximitySensorManagerFactory proximitySensorManagerFactory,
@@ -102,6 +104,7 @@ public final class TelecomSystem {
         mContext = context.getApplicationContext();
 
         mMissedCallNotifier = missedCallNotifier;
+        mCallInfoProvider = callInfoProvider;
         mViceNotifier = vicenotifier;
         mPhoneAccountRegistrar = new PhoneAccountRegistrar(mContext);
         mContactsAsyncHelper = new ContactsAsyncHelper(mLock);
@@ -116,6 +119,7 @@ public final class TelecomSystem {
                 headsetMediaButtonFactory,
                 proximitySensorManagerFactory,
                 inCallWakeLockControllerFactory,
+                mCallInfoProvider,
                 mViceNotifier);
 
         mRespondViaSmsManager = new RespondViaSmsManager(mCallsManager, mLock);
