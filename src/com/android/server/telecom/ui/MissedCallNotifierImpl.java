@@ -102,26 +102,8 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
     private final Context mContext;
     private final NotificationManager mNotificationManager;
 
-<<<<<<< HEAD
-    private final ComponentName mNotificationComponent;
-
-    // used to track missed calls
-    private static class MissedCallInfo {
-        String name;
-        String number;
-        long date;
-
-        MissedCallInfo(String name, String number, long date) {
-            this.name = name;
-            this.number = number;
-            this.date = date;
-        }
-    };
-    private ArrayList<MissedCallInfo> mMissedCalls = new ArrayList<MissedCallInfo>();
-=======
     // Used to track the number of missed calls.
     private int mMissedCallCount = 0;
->>>>>>> parent of 0061dbf... Allow a custom component to receive notification of missed call.
 
     public MissedCallNotifierImpl(Context context) {
         mContext = context;
@@ -165,9 +147,35 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
         cancelMissedCallNotification();
     }
 
-    @Override
-    public void clearMissedCallNotifications() {
-        cancelMissedCallNotification();
+    /**
+     * Broadcasts missed call notification to custom component if set.
+     * @param number The phone number associated with the notification. null if
+     *               no call.
+     * @param count The number of calls associated with the notification.
+     * @return {@code true} if the broadcast was sent. {@code false} otherwise.
+     */
+    private boolean sendNotificationCustomComponent(Call call, int count) {
+        if (mNotificationComponent != null) {
+            Intent intent = new Intent();
+            intent.setFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+            intent.setComponent(mNotificationComponent);
+            intent.setAction(TelecomManager.ACTION_SHOW_MISSED_CALLS_NOTIFICATION);
+            intent.putExtra(TelecomManager.EXTRA_NOTIFICATION_COUNT, count);
+            intent.putExtra(TelecomManager.EXTRA_NOTIFICATION_PHONE_NUMBER,
+                    call != null ? call.getPhoneNumber() : null);
+            intent.putExtra(TelecomManager.EXTRA_CLEAR_MISSED_CALLS_INTENT,
+                    createClearMissedCallsPendingIntent());
+
+            if (count == 1 && call != null) {
+                intent.putExtra(TelecomManager.EXTRA_CALL_BACK_INTENT,
+                    createCallBackPendingIntent(call.getHandle()));
+            }
+
+            mContext.sendBroadcast(intent);
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -314,13 +322,8 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
 
     /** Cancels the "missed call" notification. */
     private void cancelMissedCallNotification() {
-<<<<<<< HEAD
-        // Reset the list of missed calls
-        mMissedCalls.clear();
-=======
         // Reset the number of missed calls to 0.
         mMissedCallCount = 0;
->>>>>>> parent of 0061dbf... Allow a custom component to receive notification of missed call.
         long token = Binder.clearCallingIdentity();
         try {
             mNotificationManager.cancelAsUser(null, MISSED_CALL_NOTIFICATION_ID,
